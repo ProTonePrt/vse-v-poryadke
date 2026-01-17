@@ -146,6 +146,12 @@ except ImportError:
 
 telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
+# --- Инициализация при запуске ---
+@app.on_event("startup")
+async def initialize_telegram_app():
+    await telegram_app.initialize()
+    await telegram_app.start()
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
@@ -239,7 +245,7 @@ async def webhook_endpoint(request: Request):
     try:
         update_data = await request.json()
         update = Update.de_json(update_data)
-        await telegram_app.process_update(update)
+        await telegram_app.update_queue.put(update)
         return JSONResponse({"status": "ok"})
     except Exception as e:
         print(f"Ошибка в вебхуке: {e}")
