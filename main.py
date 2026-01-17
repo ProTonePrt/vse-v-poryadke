@@ -1,142 +1,152 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+import sqlite3
 from datetime import datetime, timedelta
-from sqlalchemy import create_engine, Column, Integer, String, Boolean, DateTime
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+import os
+from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update
+import requests
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 
 # --- Конфигурация ---
-DATABASE_URL = "sqlite:///./users.db"
-Base = declarative_base()
-
-# --- Модель пользователя ---
-class User(Base):
-    __tablename__ = "users"
-
-    id = Column(Integer, primary_key=True, index=True)
-    telegram_id = Column(String, unique=True, index=True)
-    name = str
-    checkin_time = Column(DateTime)  # Время последней отметки
-    contact_telegram_id = Column(String)  # ID доверенного лица
-    enabled = Column(Boolean, default=True)
-
-# --- Pydantic модели ---
-class UserCreate(BaseModel):
-    telegram_id: str
-    name: str
-    contact_telegram_id: str
-
-class CheckInRequest(BaseModel):
-    telegram_id: str
-
-# --- Приложение ---
-from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(title="Всё в порядке?", version="0.1.0")
+
 # --- Настройка CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Для разработки. В продакшене указать точные домены
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Инициализация БД ---
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base.metadata.create_all(bind=engine)
+# --- Модель для запросов ---
+class RegisterRequest(BaseModel):
+    telegram_id: str
+    name: str
+    contact_telegram_id: str
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+class CheckinRequest(BaseModel):
+    telegram_id: str
 
-# --- Эндпоинты ---
-@app.post("/register")
-async def register_user(user_data: UserCreate):
-    db = next(get_db())
+# --- Работа с базой данных ---
+DB_PATH = "users.db"
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            telegram_id TEXT UNIQUE NOT NULL,
+            name TEXT NOT NULL,
+            contact_telegram_id TEXT,
+            checkin_time TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+def get_user_by_telegram_id(telegram_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE telegram_id = ?", (telegram_id,))
+    row = cursor.fetchone()
+    conn.close()
     
-    # Проверяем, существует ли пользователь
-    existing_user = db.query(User).filter(User.telegram_id == user_data.telegram_id).first()
-    if existing_user:
+    if row:
+        return {
+            "id": row[0],
+            "telegram_id": row[1],
+            "name": row[2],
+            "contact_telegram_id": row[3],
+            "checkin_time": row[4]
+        }
+    return None
+
+def update_checkin_time(telegram_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET checkin_time = ? WHERE telegram_id = ?", 
+                   (datetime.now().isoformat(), telegram_id))
+    conn.commit()
+    conn.close()
+
+def register_user(telegram_id: str, name: str, contact_telegram_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO users (telegram_id, name, contact_telegram_id) 
+            VALUES (?, ?, ?)
+        """, (telegram_id, name, contact_telegram_id))
+        conn.commit()
+        conn.close()
+        return True
+    except sqlite3.IntegrityError:
+        conn.close()
+        return False
+
+# --- API маршруты ---
+@app.on_event("startup")
+async def startup_event():
+    init_db()
+
+@app.post("/register")
+async def register_endpoint(data: RegisterRequest):
+    user = get_user_by_telegram_id(data.telegram_id)
+    
+    if user:
         return {"status": "error", "message": "Пользователь уже зарегистрирован"}
-
-    # Создаем нового пользователя
-    new_user = User(
-        telegram_id=user_data.telegram_id,
-        name=user_data.name,
-        contact_telegram_id=user_data.contact_telegram_id,
-        enabled=True
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    return {"status": "ok", "user_id": new_user.id}
+    
+    success = register_user(data.telegram_id, data.name, data.contact_telegram_id)
+    
+    if success:
+        return {"status": "ok", "user_id": data.telegram_id}
+    else:
+        return {"status": "error", "message": "Ошибка регистрации"}
 
 @app.post("/checkin")
-async def check_in(checkin_data: CheckInRequest):
-    db = next(get_db())
+async def checkin_endpoint(data: CheckinRequest):
+    user = get_user_by_telegram_id(data.telegram_id)
     
-    user = db.query(User).filter(User.telegram_id == checkin_data.telegram_id).first()
     if not user:
         return {"status": "error", "message": "Пользователь не найден"}
     
-    user.checkin_time = datetime.utcnow()
-    db.commit()
-
-    return {"status": "ok", "message": "Отметка принята"}
+    update_checkin_time(data.telegram_id)
+    
+    return {"status": "ok", "message": "Отметка обновлена"}
 
 @app.get("/status/{telegram_id}")
 async def get_status(telegram_id: str):
-    db = next(get_db())
+    user = get_user_by_telegram_id(telegram_id)
     
-    user = db.query(User).filter(User.telegram_id == telegram_id).first()
     if not user:
         return {"status": "error", "message": "Пользователь не найден"}
     
-    # Проверяем, был ли чекин за последние 24 часа
-    now = datetime.utcnow()
-    last_checkin = user.checkin_time or now - timedelta(days=1)  # Если никогда не отмечался
+    last_checkin = user["checkin_time"]
+    last_checkin_dt = datetime.fromisoformat(last_checkin)
+    time_diff = datetime.now() - last_checkin_dt
     
-    if now - last_checkin > timedelta(hours=24):
-        status = "ALARM"
-    else:
-        status = "OK"
+    status = "ALARM" if time_diff > timedelta(hours=24) else "OK"
     
     return {
         "status": status,
-        "last_checkin": user.checkin_time.isoformat() if user.checkin_time else None,
-        "contact_telegram_id": user.contact_telegram_id
+        "last_checkin": last_checkin,
+        "contact_telegram_id": user["contact_telegram_id"]
     }
-# --- Telegram Webhook Handler ---
-from telegram.ext import Application
-from config import TELEGRAM_BOT_TOKEN
-import asyncio
 
-# Создаем приложение Telegram
+# --- Telegram Bot (для вебхука) ---
+try:
+    from config import TELEGRAM_BOT_TOKEN
+except ImportError:
+    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
 telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-@app.post("/webhook")
-async def handle_webhook(update: dict):
-    """Обработка вебхука от Telegram"""
-    from telegram import Update
-    
-    # Преобразуем словарь в объект Update
-    update_obj = Update.de_json(update)
-    
-    # Передаем обновление в обработчики Telegram Bot
-    await telegram_app.process_update(update_obj)
-    
-    return {"status": "ok"}
-
-# Регистрируем обработчики команд (повторно, для вебхука)
-from telegram.ext import CommandHandler
-
-async def start(update, context):
-    # Копируем функцию из bot.py
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
     
@@ -151,8 +161,7 @@ async def start(update, context):
     
     await context.bot.send_message(chat_id=chat_id, text=message)
 
-async def register(update, context):
-    # Копируем функцию из bot.py
+async def register_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
     
@@ -166,8 +175,6 @@ async def register(update, context):
     name = context.args[0]
     contact_id = context.args[1]
 
-    import requests
-    BASE_URL = "http://127.0.0.1:8000"  # Локальный адрес для сервера
     payload = {
         "telegram_id": user_id,
         "name": name,
@@ -175,7 +182,7 @@ async def register(update, context):
     }
     
     try:
-        response = requests.post(f"{BASE_URL}/register", json=payload)
+        response = requests.post("http://127.0.0.1:8000/register", json=payload)
         data = response.json()
         
         if data["status"] == "ok":
@@ -194,17 +201,14 @@ async def register(update, context):
             text=f"Ошибка подключения к серверу: {str(e)}"
         )
 
-async def checkin(update, context):
-    # Копируем функцию из bot.py
+async def checkin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     chat_id = update.effective_chat.id
     
-    import requests
-    BASE_URL = "http://127.0.0.1:8000"  # Локальный адрес для сервера
     payload = {"telegram_id": user_id}
     
     try:
-        response = requests.post(f"{BASE_URL}/checkin", json=payload)
+        response = requests.post("http://127.0.0.1:8000/checkin", json=payload)
         data = response.json()
         
         if data["status"] == "ok":
@@ -223,12 +227,25 @@ async def checkin(update, context):
             text=f"❌ Ошибка подключения к серверу: {str(e)}"
         )
 
-# Регистрируем обработчики
+# Регистрация обработчиков
 telegram_app.add_handler(CommandHandler("start", start))
-telegram_app.add_handler(CommandHandler("register", register))
-telegram_app.add_handler(CommandHandler("checkin", checkin))
+telegram_app.add_handler(CommandHandler("register", register_cmd))
+telegram_app.add_handler(CommandHandler("checkin", checkin_cmd))
 
-# --- Запуск ---
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8000)
+# --- Вебхук ---
+@app.post("/webhook")
+async def webhook_endpoint(request: Request):
+    """Обработка вебхука от Telegram"""
+    try:
+        update_data = await request.json()
+        update = Update.de_json(update_data)
+        await telegram_app.process_update(update)
+        return JSONResponse({"status": "ok"})
+    except Exception as e:
+        print(f"Ошибка в вебхуке: {e}")
+        return JSONResponse({"status": "error"}, status_code=500)
+
+# --- Корневой маршрут ---
+@app.get("/")
+async def root():
+    return {"message": "Всё в порядке? API"}
