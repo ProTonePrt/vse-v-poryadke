@@ -111,6 +111,122 @@ async def get_status(telegram_id: str):
         "last_checkin": user.checkin_time.isoformat() if user.checkin_time else None,
         "contact_telegram_id": user.contact_telegram_id
     }
+# --- Telegram Webhook Handler ---
+from telegram.ext import Application
+from config import TELEGRAM_BOT_TOKEN
+import asyncio
+
+# Создаем приложение Telegram
+telegram_app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+@app.post("/webhook")
+async def handle_webhook(update: dict):
+    """Обработка вебхука от Telegram"""
+    from telegram import Update
+    
+    # Преобразуем словарь в объект Update
+    update_obj = Update.de_json(update)
+    
+    # Передаем обновление в обработчики Telegram Bot
+    await telegram_app.process_update(update_obj)
+    
+    return {"status": "ok"}
+
+# Регистрируем обработчики команд (повторно, для вебхука)
+from telegram.ext import CommandHandler
+
+async def start(update, context):
+    # Копируем функцию из bot.py
+    user_id = str(update.effective_user.id)
+    chat_id = update.effective_chat.id
+    
+    message = (
+        f"Привет! Я бот для системы 'Всё в порядке?'.\n\n"
+        f"Ваш Telegram ID: {user_id}\n\n"
+        f"Для регистрации в системе используйте команду:\n"
+        f"/register <ваше_имя> <ID_доверенного_лица>\n\n"
+        f"Для отметки 'я в порядке' используйте:\n"
+        f"/checkin"
+    )
+    
+    await context.bot.send_message(chat_id=chat_id, text=message)
+
+async def register(update, context):
+    # Копируем функцию из bot.py
+    user_id = str(update.effective_user.id)
+    chat_id = update.effective_chat.id
+    
+    if len(context.args) < 2:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text="Используйте: /register <ваше_имя> <ID_доверенного_лица>"
+        )
+        return
+
+    name = context.args[0]
+    contact_id = context.args[1]
+
+    import requests
+    BASE_URL = "http://127.0.0.1:8000"  # Локальный адрес для сервера
+    payload = {
+        "telegram_id": user_id,
+        "name": name,
+        "contact_telegram_id": contact_id
+    }
+    
+    try:
+        response = requests.post(f"{BASE_URL}/register", json=payload)
+        data = response.json()
+        
+        if data["status"] == "ok":
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Вы успешно зарегистрированы!\nВаш ID: {data['user_id']}"
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"Ошибка регистрации: {data['message']}"
+            )
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"Ошибка подключения к серверу: {str(e)}"
+        )
+
+async def checkin(update, context):
+    # Копируем функцию из bot.py
+    user_id = str(update.effective_user.id)
+    chat_id = update.effective_chat.id
+    
+    import requests
+    BASE_URL = "http://127.0.0.1:8000"  # Локальный адрес для сервера
+    payload = {"telegram_id": user_id}
+    
+    try:
+        response = requests.post(f"{BASE_URL}/checkin", json=payload)
+        data = response.json()
+        
+        if data["status"] == "ok":
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text="✅ Вы отметились! Всё в порядке."
+            )
+        else:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=f"❌ Ошибка отметки: {data['message']}"
+            )
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"❌ Ошибка подключения к серверу: {str(e)}"
+        )
+
+# Регистрируем обработчики
+telegram_app.add_handler(CommandHandler("start", start))
+telegram_app.add_handler(CommandHandler("register", register))
+telegram_app.add_handler(CommandHandler("checkin", checkin))
 
 # --- Запуск ---
 if __name__ == "__main__":
