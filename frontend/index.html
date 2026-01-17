@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Всё в порядке?</title>
+    <link rel="manifest" href="/manifest.json">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        input, button {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #45a049;
+        }
+        .status-ok {
+            background-color: #dff0d8;
+            color: #3c763d;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .status-alarm {
+            background-color: #f2dede;
+            color: #a94442;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .info {
+            background-color: #d9edf7;
+            color: #31708f;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Всё в порядке?</h1>
+        <p>Введите Telegram ID пользователя, чтобы проверить его статус.</p>
+        
+        <input type="text" id="userIdInput" placeholder="Введите Telegram ID">
+        <button onclick="checkStatus()">Проверить статус</button>
+        
+        <div id="result"></div>
+    </div>
+
+    <script>
+        async function checkStatus() {
+            const userId = document.getElementById('userIdInput').value.trim();
+            const resultDiv = document.getElementById('result');
+            
+            if (!userId) {
+                resultDiv.innerHTML = '<div class="info">Введите ID пользователя</div>';
+                return;
+            }
+
+            try {
+                const response = await fetch(`http://127.0.0.1:8000/status/${userId}`);
+                const data = await response.json();
+
+                if (data.status === 'error') {
+                    resultDiv.innerHTML = `<div class="info">${data.message}</div>`;
+                    return;
+                }
+
+                let statusClass = data.status === 'OK' ? 'status-ok' : 'status-alarm';
+                let statusText = data.status === 'OK' ? 'Всё в порядке ✅' : 'ТРЕВОГА ⚠️';
+
+                resultDiv.innerHTML = `
+                    <div class="${statusClass}">
+                        <strong>${statusText}</strong><br>
+                        Последняя отметка: ${data.last_checkin || 'Никогда'}<br>
+                        Контакт: ${data.contact_telegram_id}
+                    </div>
+                `;
+            } catch (error) {
+                resultDiv.innerHTML = `<div class="info">Ошибка подключения к серверу</div>`;
+            }
+        }
+    </script>
+</body>
+</html>
