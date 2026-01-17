@@ -245,7 +245,8 @@ async def webhook_endpoint(request: Request):
     try:
         update_data = await request.json()
         update = Update.de_json(update_data)
-        await telegram_app.update_queue.put(update)
+        # Прямой вызов обработки
+        await telegram_app.process_update(update)
         return JSONResponse({"status": "ok"})
     except Exception as e:
         print(f"Ошибка в вебхуке: {e}")
