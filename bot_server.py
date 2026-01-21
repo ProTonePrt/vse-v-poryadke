@@ -44,7 +44,8 @@ async def register_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     
     try:
-        response = requests.post("http://127.0.0.1:8000/register", json=payload)
+        # Заменено на URL Railway
+        response = requests.post("https://vse-v-poryadke-production.up.railway.app/register", json=payload)
         data = response.json()
         
         if data["status"] == "ok":
@@ -70,7 +71,8 @@ async def checkin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     payload = {"telegram_id": user_id}
     
     try:
-        response = requests.post("http://127.0.0.1:8000/checkin", json=payload)
+        # Заменено на URL Railway
+        response = requests.post("https://vse-v-poryadke-production.up.railway.app/checkin", json=payload)
         data = response.json()
         
         if data["status"] == "ok":
