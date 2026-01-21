@@ -91,7 +91,7 @@ async def startup_event():
     init_db()
 
 @app.post("/register")
-async def register_endpoint( RegisterRequest):
+async def register_endpoint(data: RegisterRequest):
     user = get_user_by_telegram_id(data.telegram_id)
     
     if user:
